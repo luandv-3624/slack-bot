@@ -29,15 +29,13 @@ Yêu cầu người dùng nhập các thông tin sau:
 
 ### 3. Xử lý đăng ký
 
-Thông tin đăng ký sẽ được xử lý như sau:
+Hiện tại bot chạy ở giai đoạn PoC và xử lý như sau:
 
-* **Lưu database**: ghi vào bảng ProjectApplication
-* **Thông báo kênh quản lý**: gửi message vào channel chỉ định
+* **Gửi thông báo kênh quản lý**: gửi message vào `SLACK_RESULT_CHANNEL` nếu được cấu hình
 * **Gửi DM cho manager**: thông báo trực tiếp đến manager được chọn
-
-### 4. Ngăn chặn đăng ký trùng
-
-Tự động ngăn việc cùng một user đăng ký nhiều lần cho cùng một project
+* **Manager list**: lấy từ `SLACK_MANAGER_LIST` trong `.env`
+* **Không lưu DB**: hiện tại không lưu nội dung ứng tuyển vào database
+* **Không kiểm tra duplicate**: hiện tại không có cơ chế ngăn trùng đăng ký
 
 ## Cài đặt
 
@@ -54,7 +52,11 @@ SLACK_APP_TOKEN=xapp-your-app-token
 # Slack Project Applications
 SLACK_RESULT_CHANNEL=C1234567890 # Channel nhận kết quả đăng ký
 SLACK_TRIGGER_KEYWORD=新規プロジェクト募集 # Từ khóa trigger
+SLACK_MANAGER_LIST='[{"id":"1","full_name_english":"たまろ","slack_user_id":"XYZ...."}]' # UM list theo env
 ```
+
+- `SLACK_MANAGER_LIST` là JSON array chứa danh sách UM. Mỗi phần tử cần có `id`, `full_name_english`, và `slack_user_id`.
+- Khi cấu hình giá trị này, bot sẽ lấy danh sách UM từ env thay vì truy vấn database cho phần dropdown manager.
 
 ### Cấu hình Slack App
 
@@ -84,72 +86,15 @@ SLACK_TRIGGER_KEYWORD=新規プロジェクト募集 # Từ khóa trigger
 
    * Cấp quyền đọc/ghi chat
 
-### Schema Database
+### Logic xử lý hiện tại
 
-#### Bảng ProjectApplication
+Ở giai đoạn PoC, bot không lưu dữ liệu vào database. Flow hiện tại là:
 
-```sql
-CREATE TABLE project_applications (
-  id BIGINT PRIMARY KEY,
-  slack_user_id VARCHAR(100) NOT NULL,
-  slack_user_name VARCHAR(100) NOT NULL,
-  participation_type VARCHAR(50) NOT NULL,
-  self_introduction TEXT NOT NULL,
-  manager_id BIGINT NOT NULL REFERENCES members(id),
-  project_message_ts VARCHAR(100) NOT NULL,
-  project_channel VARCHAR(100) NOT NULL,
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  updated_at TIMESTAMPTZ DEFAULT NOW(),
-  UNIQUE(slack_user_id, project_message_ts)
-);
-```
-
-**Mô tả chi tiết các field:**
-
-- `id`: ID tự động tăng, khóa chính của bảng
-- `slack_user_id`: ID người dùng Slack của người ứng tuyển (ví dụ: U07KB8B8142)
-- `slack_user_name`: Tên hiển thị của người dùng Slack (ví dụ: john.doe)
-- `participation_type`: Loại tham gia mong muốn, có 3 giá trị:
-  - `Planning`: Muốn tham gia giai đoạn lên ý tưởng / đề xuất
-  - `Implementation`: Muốn tham gia với vai trò lập trình viên
-  - `Interested`: Tạm thời chỉ quan tâm
-- `self_introduction`: Nội dung tự giới thiệu và động lực của người ứng tuyển
-- `manager_id`: ID của manager phụ trách, tham chiếu đến bảng members
-- `project_message_ts`: Timestamp của tin nhắn tuyển dự án gốc trên Slack
-- `project_channel`: ID kênh Slack chứa tin nhắn tuyển dự án
-- `created_at`: Thời gian tạo bản ghi
-- `updated_at`: Thời gian cập nhật bản ghi
-
-**Ràng buộc duy nhất:** Kết hợp `slack_user_id` và `project_message_ts` để ngăn chặn đăng ký trùng lặp cho cùng một dự án.
-
-#### Thêm cột vào bảng Members
-
-```sql
-ALTER TABLE members ADD COLUMN slack_user_id VARCHAR(100);
-```
-
-**slack_user_id**: ID người dùng Slack của member, dùng để gửi DM thông báo.
-
-#### Logic lấy danh sách UM (User Manager)
-
-Danh sách manager được lấy từ các bảng sau trong database:
-
-- `members`: Bảng chính chứa thông tin thành viên
-- `member_roles`: Bảng quan hệ giữa member và role
-- `roles`: Bảng chứa định nghĩa các role
-
-**Query logic:**
-```sql
-SELECT m.id, m.full_name_english
-FROM members m
-JOIN member_roles mr ON m.id = mr.member_id
-JOIN roles r ON mr.role_id = r.id
-WHERE r.code = 'um'  -- Role code cho User Manager
-  AND m.is_on_leave = false  -- Loại bỏ thành viên đang nghỉ việc
-ORDER BY m.full_name_english ASC;
-```
-
-Manager sẽ được hiển thị trong dropdown theo thứ tự alphabet của tên tiếng Anh.
+* Bot lắng nghe tin nhắn chứa `SLACK_TRIGGER_KEYWORD`
+* Khi người dùng nhấn nút `応募する`, bot mở modal ứng tuyển
+* Khi submit, bot gửi thông báo vào `SLACK_RESULT_CHANNEL` nếu được cấu hình
+* Đồng thời bot gửi DM tới manager được chọn, lấy `slack_user_id` từ `SLACK_MANAGER_LIST`
+* Không có cơ chế lưu lịch sử ứng tuyển hoặc kiểm tra trùng lặp
 
 ## Cách sử dụng
 
@@ -195,19 +140,11 @@ Chi tiết...
 
   ![Ảnh minh họa: DM gửi đến manager](./manager-dm-notification.png)
 
-## Thiết lập thông tin manager
-
-Để nhận DM, cần set `slack_user_id` trong bảng members:
-
-```sql
-UPDATE members
-SET slack_user_id = 'XYZ...'
-WHERE id = ...;
-```
-
 ## File liên quan
 
-* `prisma/schema.prisma`
+* `slack.listener.ts`
+* `slack.service.ts`
+* `slack.module.ts`
 
 ## Tài liệu tham khảo
 
